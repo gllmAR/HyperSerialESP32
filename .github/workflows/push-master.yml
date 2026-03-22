@@ -11,10 +11,10 @@ jobs:
   PlatformIO:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6.0.0
+    - uses: actions/checkout@v6.0.2
 
     - name: Cache pip
-      uses: actions/cache@v4.3.0
+      uses: actions/cache@v5.0.3
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -22,13 +22,13 @@ jobs:
           ${{ runner.os }}-pip-
 
     - name: Cache PlatformIO
-      uses: actions/cache@v4.3.0
+      uses: actions/cache@v5.0.3
       with:
         path: ~/.platformio
         key: ${{ runner.os }}-${{ hashFiles('**/lockfiles') }}
 
     - name: Set up Python
-      uses: actions/setup-python@v6.1.0
+      uses: actions/setup-python@v6.2.0
       with:
         python-version: 3.x
 
@@ -43,7 +43,7 @@ jobs:
         zip -j .pio/build/recovery_firmware.zip .pio/build/*.factory.bin
         rm -f .pio/build/*.factory.bin
 
-    - uses: actions/upload-artifact@v5.0.0
+    - uses: actions/upload-artifact@v7.0.0
       name: Upload artifacts (commit)
       if: (startsWith(github.event.ref, 'refs/tags') != true)
       with:
@@ -51,7 +51,7 @@ jobs:
           .pio/build/*.bin
           .pio/build/recovery_firmware.zip
 
-    - uses: actions/upload-artifact@v5.0.0
+    - uses: actions/upload-artifact@v7.0.0
       name: Upload artifacts (release)
       if: startsWith(github.ref, 'refs/tags/')
       with:
@@ -81,7 +81,7 @@ jobs:
         if: contains(env.VERSION, 'alpha') || contains(env.VERSION, 'beta')
         run: echo "preRelease=true" >> $GITHUB_ENV
 
-      - uses: actions/download-artifact@v6.0.0
+      - uses: actions/download-artifact@v8.0.0
         with:
           pattern: firmware-release-*
           merge-multiple: true
