@@ -163,7 +163,8 @@
 #if defined(INTERNAL_LED_DATA_PIN)
 	// internal LED segment (e.g. the onboard LED of the M5Atom) —
 	// a small independent strand on an RMT channel so the main strip's
-	// I2S DMA engine stays untouched
+	// I2S DMA engine stays untouched. It shows the average color of a
+	// window of LEDs sampled around the middle of the incoming frame.
 	#ifdef NEOPIXEL_RGBW
 		#define LED_DRIVER_INTERN NeoPixelBus<NeoGrbwFeature, NeoEsp32Rmt0Sk6812Method>
 	#else
@@ -171,6 +172,7 @@
 	#endif
 	#pragma message(VAR_NAME_VALUE(INTERNAL_LED_DATA_PIN))
 	#pragma message(VAR_NAME_VALUE(INTERNAL_LED_COUNT))
+	#pragma message(VAR_NAME_VALUE(INTERNAL_LED_SAMPLE_WINDOW))
 	#pragma message(VAR_NAME_VALUE2(LED_DRIVER_INTERN))
 #else
 	// stub so the internal segment code compiles out with no cost

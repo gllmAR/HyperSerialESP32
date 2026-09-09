@@ -38,17 +38,20 @@
 	#endif
 #endif
 
-#if defined(SECOND_SEGMENT_START_INDEX) && defined(INTERNAL_LED_DATA_PIN)
-	#error "Internal LED segment is not combinable with SECOND_SEGMENT (index math)"
-#endif
-
-// internal LED segment: consumes the first pixels of the received frame;
-// 0 (default) disables it and the whole frame goes to the main strip
-#if defined(INTERNAL_LED_DATA_PIN) && !defined(INTERNAL_LED_COUNT)
-	#error "Please define INTERNAL_LED_COUNT for the internal LED segment"
-#endif
-#if !defined(INTERNAL_LED_COUNT)
-	#define INTERNAL_LED_COUNT 0
+// internal LED segment (e.g. the onboard LED of the M5Atom):
+// it does NOT consume any pixel from the incoming frame. Instead it shows
+// the average color of a window of LEDs sampled around the middle of the
+// frame, so HyperHDR can keep its LED layout unchanged (full serial
+// compatibility).
+// INTERNAL_LED_COUNT defaults to 1, INTERNAL_LED_SAMPLE_WINDOW defaults
+// to 16 LEDs. To disable the internal LED, build without INTERNAL_LED_DATA_PIN.
+#if defined(INTERNAL_LED_DATA_PIN)
+	#if !defined(INTERNAL_LED_COUNT)
+		#define INTERNAL_LED_COUNT 1
+	#endif
+	#if !defined(INTERNAL_LED_SAMPLE_WINDOW)
+		#define INTERNAL_LED_SAMPLE_WINDOW 16
+	#endif
 #endif
 
 class Base
@@ -59,8 +62,14 @@ class Base
 	LED_DRIVER* ledStrip1 = nullptr;
 	// NeoPixelBusLibrary second object
 	LED_DRIVER2* ledStrip2 = nullptr;
-	// internal LED segment object (optional — e.g. the onboard LED of the M5Atom)
-	LED_DRIVER_INTERN* ledStripIntern = nullptr;
+	#if defined(INTERNAL_LED_DATA_PIN)
+		// internal LED segment object (e.g. the onboard LED of the M5Atom)
+		LED_DRIVER_INTERN* ledStripIntern = nullptr;
+		// running average of the color sampled around the frame middle
+		uint32_t sampleSumR = 0, sampleSumG = 0, sampleSumB = 0, sampleSumW = 0;
+		uint16_t samplePixels = 0;
+		uint16_t sampleWindowStart = 0, sampleWindowEnd = 0;
+	#endif
 	// frame is set and ready to render
 	bool readyToRender = false;
 
@@ -136,10 +145,10 @@ class Base
 			if (ledStrip1 == nullptr)
 			{
 				#if defined(NEOPIXEL_RGBW) || defined(NEOPIXEL_RGB)
-					ledStrip1 = new LED_DRIVER(ledsNumber - INTERNAL_LED_COUNT, DATA_PIN);
+					ledStrip1 = new LED_DRIVER(ledsNumber, DATA_PIN);
 					ledStrip1->Begin();
 				#else
-					ledStrip1 = new LED_DRIVER(ledsNumber - INTERNAL_LED_COUNT);
+					ledStrip1 = new LED_DRIVER(ledsNumber);
 					ledStrip1->Begin(CLOCK_PIN, 12, DATA_PIN, 15);
 				#endif
 			}
@@ -147,6 +156,13 @@ class Base
 			#if defined(INTERNAL_LED_DATA_PIN)
 				ledStripIntern = new LED_DRIVER_INTERN(INTERNAL_LED_COUNT, INTERNAL_LED_DATA_PIN);
 				ledStripIntern->Begin();
+
+				// sample window centered around the middle LED, clamped to the strip
+				uint16_t middle = ledsNumber / 2;
+				uint16_t halfWindow = INTERNAL_LED_SAMPLE_WINDOW / 2;
+				sampleWindowStart = (middle > halfWindow) ? (middle - halfWindow) : 0;
+				sampleWindowEnd = ((sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) < ledsNumber) ?
+					(sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) : ledsNumber;
 			#endif
 		}
 
@@ -168,13 +184,32 @@ class Base
 
 		inline void renderLeds(bool newFrame)
 		{
+			#if defined(INTERNAL_LED_DATA_PIN)
+				if (newFrame && ledStripIntern != nullptr && samplePixels > 0)
+				{
+					// internal LED shows the average color sampled around the frame middle
+					#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+						ColorDefinition avg(sampleSumR / samplePixels, sampleSumG / samplePixels,
+							sampleSumB / samplePixels, sampleSumW / samplePixels);
+					#else
+						ColorDefinition avg(sampleSumR / samplePixels, sampleSumG / samplePixels,
+							sampleSumB / samplePixels);
+					#endif
+					for (uint8_t internPix = 0; internPix < INTERNAL_LED_COUNT; internPix++)
+						ledStripIntern->SetPixelColor(internPix, avg);
+				}
+			#endif
+
 			if (newFrame)
 				readyToRender = true;
 
 			if (readyToRender &&
 				(ledStrip1 != nullptr && ledStrip1->CanShow()) &&
-				!(ledStrip2 != nullptr && !ledStrip2->CanShow()) &&
-				!(ledStripIntern != nullptr && !ledStripIntern->CanShow()))
+				!(ledStrip2 != nullptr && !ledStrip2->CanShow())
+				#if defined(INTERNAL_LED_DATA_PIN)
+					&& !(ledStripIntern != nullptr && !ledStripIntern->CanShow())
+				#endif
+			)
 			{
 				statistics.increaseShow();
 				readyToRender = false;
@@ -183,8 +218,10 @@ class Base
 				ledStrip1->Show(false);
 				if (ledStrip2 != nullptr)
 					ledStrip2->Show(false);
-				if (ledStripIntern != nullptr)
-					ledStripIntern->Show(false);
+				#if defined(INTERNAL_LED_DATA_PIN)
+					if (ledStripIntern != nullptr)
+						ledStripIntern->Show(false);
+				#endif
 			}
 		}
 
@@ -192,6 +229,26 @@ class Base
 		{
 			if (pix < ledsNumber)
 			{
+				#if defined(INTERNAL_LED_DATA_PIN)
+					// reset the sampler on the first pixel of a new frame and
+					// accumulate the color window around the middle LED
+					if (pix == 0)
+					{
+						sampleSumR = sampleSumG = sampleSumB = sampleSumW = 0;
+						samplePixels = 0;
+					}
+					if (pix >= sampleWindowStart && pix < sampleWindowEnd)
+					{
+						sampleSumR += inputColor.R;
+						sampleSumG += inputColor.G;
+						sampleSumB += inputColor.B;
+						#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+							sampleSumW += inputColor.W;
+						#endif
+						samplePixels++;
+					}
+				#endif
+
 				#if defined(SECOND_SEGMENT_START_INDEX)
 					if (pix < SECOND_SEGMENT_START_INDEX)
 						ledStrip1->SetPixelColor(pix, inputColor);
@@ -204,15 +261,7 @@ class Base
 						#endif
 					}
 				#else
-					#if defined(INTERNAL_LED_DATA_PIN)
-						// first pixels go to the internal segment, the rest to the main strip
-						if (pix < INTERNAL_LED_COUNT)
-							ledStripIntern->SetPixelColor(pix, inputColor);
-						else
-							ledStrip1->SetPixelColor(pix - INTERNAL_LED_COUNT, inputColor);
-					#else
-						ledStrip1->SetPixelColor(pix, inputColor);
-					#endif
+					ledStrip1->SetPixelColor(pix, inputColor);
 				#endif
 			}
 
