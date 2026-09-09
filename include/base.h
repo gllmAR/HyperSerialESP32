@@ -40,17 +40,60 @@
 
 // internal LED segment (e.g. the onboard LED of the M5Atom):
 // it does NOT consume any pixel from the incoming frame. Instead it shows
-// the average color of a window of LEDs sampled around the middle of the
-// frame, so HyperHDR can keep its LED layout unchanged (full serial
-// compatibility).
-// INTERNAL_LED_COUNT defaults to 1, INTERNAL_LED_SAMPLE_WINDOW defaults
-// to 16 LEDs. To disable the internal LED, build without INTERNAL_LED_DATA_PIN.
+// colors sampled from the frame, so HyperHDR can keep its LED layout
+// unchanged (full serial compatibility).
+//
+// Default (single LED, e.g. M5Atom Lite): shows the average color of a
+// window of INTERNAL_LED_SAMPLE_WINDOW (default 16) LEDs around the middle
+// of the frame.
+//
+// INTERNAL_LED_MATRIX (e.g. M5Atom Matrix, 25 LEDs): the internal strand
+// is a small matrix; each cell shows the average color of one of the
+// INTERNAL_LED_COUNT regions the incoming frame is divided into, arranged
+// row-major from the top-left. INTERNAL_LED_MATRIX_ROTATE (0-3, 90 degrees
+// clockwise steps) and INTERNAL_LED_MATRIX_MIRROR adapt the logical view
+// to the physical mounting of the device.
+//
+// INTERNAL_LED_COUNT defaults to 1 (25 in matrix mode). To disable the
+// internal LED, build without INTERNAL_LED_DATA_PIN.
 #if defined(INTERNAL_LED_DATA_PIN)
-	#if !defined(INTERNAL_LED_COUNT)
-		#define INTERNAL_LED_COUNT 1
-	#endif
-	#if !defined(INTERNAL_LED_SAMPLE_WINDOW)
-		#define INTERNAL_LED_SAMPLE_WINDOW 16
+	#if defined(INTERNAL_LED_MATRIX)
+		#if !defined(INTERNAL_LED_MATRIX_WIDTH) || !defined(INTERNAL_LED_MATRIX_HEIGHT)
+			#undef INTERNAL_LED_MATRIX_WIDTH
+			#undef INTERNAL_LED_MATRIX_HEIGHT
+			#define INTERNAL_LED_MATRIX_WIDTH 5
+			#define INTERNAL_LED_MATRIX_HEIGHT 5
+		#endif
+		#if defined(INTERNAL_LED_COUNT) && INTERNAL_LED_COUNT != INTERNAL_LED_MATRIX_WIDTH * INTERNAL_LED_MATRIX_HEIGHT
+			#error "INTERNAL_LED_COUNT must match the matrix size (width * height)"
+		#endif
+		#if !defined(INTERNAL_LED_COUNT)
+			#define INTERNAL_LED_COUNT (INTERNAL_LED_MATRIX_WIDTH * INTERNAL_LED_MATRIX_HEIGHT)
+		#endif
+		#if !defined(INTERNAL_LED_MATRIX_ROTATE)
+			#define INTERNAL_LED_MATRIX_ROTATE 0
+		#endif
+		// physical chain order of the M5Atom Matrix 5x5 (determined on-device):
+		// row-wise serpentine, chain #0 at the bottom-right corner, running
+		// right-to-left on even rows (counted from the bottom), left-to-right on
+		// odd rows, ending at #24 = top-left.
+		// Indexed by the LOGICAL cell (row-major, origin at the top-left of the
+		// logical view); value = physical chain index of that cell.
+		#if !defined(INTERNAL_LED_MATRIX_MAP)
+			#define INTERNAL_LED_MATRIX_MAP \
+				{ 24, 23, 22, 21, 20, \
+				  15, 16, 17, 18, 19, \
+				  14, 13, 12, 11, 10, \
+				   5,  6,  7,  8,  9, \
+				   4,  3,  2,  1,  0 }
+		#endif
+	#else
+		#if !defined(INTERNAL_LED_COUNT)
+			#define INTERNAL_LED_COUNT 1
+		#endif
+		#if !defined(INTERNAL_LED_SAMPLE_WINDOW)
+			#define INTERNAL_LED_SAMPLE_WINDOW 16
+		#endif
 	#endif
 #endif
 
@@ -65,10 +108,52 @@ class Base
 	#if defined(INTERNAL_LED_DATA_PIN)
 		// internal LED segment object (e.g. the onboard LED of the M5Atom)
 		LED_DRIVER_INTERN* ledStripIntern = nullptr;
-		// running average of the color sampled around the frame middle
-		uint32_t sampleSumR = 0, sampleSumG = 0, sampleSumB = 0, sampleSumW = 0;
-		uint16_t samplePixels = 0;
-		uint16_t sampleWindowStart = 0, sampleWindowEnd = 0;
+		#if defined(INTERNAL_LED_MATRIX)
+			// per-cell color sample buckets: the incoming frame is divided
+			// into INTERNAL_LED_COUNT regions, one per matrix cell
+			uint32_t cellSumR[INTERNAL_LED_COUNT] = {0};
+			uint32_t cellSumG[INTERNAL_LED_COUNT] = {0};
+			uint32_t cellSumB[INTERNAL_LED_COUNT] = {0};
+			#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+				uint32_t cellSumW[INTERNAL_LED_COUNT] = {0};
+			#endif
+			uint16_t cellPixels[INTERNAL_LED_COUNT] = {0};
+
+			// map a logical cell to the physical chain index, honoring the
+			// compile-time rotation (90 degrees clockwise steps) and mirroring
+			const uint8_t internalLedMatrixMap[INTERNAL_LED_COUNT] = INTERNAL_LED_MATRIX_MAP;
+
+			inline uint8_t internalMatrixChainIndex(uint8_t logicalCell) const
+			{
+				uint8_t x = logicalCell % INTERNAL_LED_MATRIX_WIDTH;
+				uint8_t y = logicalCell / INTERNAL_LED_MATRIX_WIDTH;
+
+				#if defined(INTERNAL_LED_MATRIX_MIRROR)
+					x = INTERNAL_LED_MATRIX_WIDTH - 1 - x;
+				#endif
+
+				#if INTERNAL_LED_MATRIX_ROTATE == 1 || INTERNAL_LED_MATRIX_ROTATE == 3
+					uint8_t swap = x;
+					x = y;
+					y = swap;
+				#endif
+				#if INTERNAL_LED_MATRIX_ROTATE == 1
+					x = INTERNAL_LED_MATRIX_WIDTH - 1 - x;
+				#elif INTERNAL_LED_MATRIX_ROTATE == 2
+					x = INTERNAL_LED_MATRIX_WIDTH - 1 - x;
+					y = INTERNAL_LED_MATRIX_HEIGHT - 1 - y;
+				#elif INTERNAL_LED_MATRIX_ROTATE == 3
+					y = INTERNAL_LED_MATRIX_HEIGHT - 1 - y;
+				#endif
+
+				return internalLedMatrixMap[y * INTERNAL_LED_MATRIX_WIDTH + x];
+			}
+		#else
+			// running average of the color sampled around the frame middle
+			uint32_t sampleSumR = 0, sampleSumG = 0, sampleSumB = 0, sampleSumW = 0;
+			uint16_t samplePixels = 0;
+			uint16_t sampleWindowStart = 0, sampleWindowEnd = 0;
+		#endif
 	#endif
 	// frame is set and ready to render
 	bool readyToRender = false;
@@ -157,12 +242,14 @@ class Base
 				ledStripIntern = new LED_DRIVER_INTERN(INTERNAL_LED_COUNT, INTERNAL_LED_DATA_PIN);
 				ledStripIntern->Begin();
 
-				// sample window centered around the middle LED, clamped to the strip
-				uint16_t middle = ledsNumber / 2;
-				uint16_t halfWindow = INTERNAL_LED_SAMPLE_WINDOW / 2;
-				sampleWindowStart = (middle > halfWindow) ? (middle - halfWindow) : 0;
-				sampleWindowEnd = ((sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) < ledsNumber) ?
-					(sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) : ledsNumber;
+				#if !defined(INTERNAL_LED_MATRIX)
+					// sample window centered around the middle LED, clamped to the strip
+					uint16_t middle = ledsNumber / 2;
+					uint16_t halfWindow = INTERNAL_LED_SAMPLE_WINDOW / 2;
+					sampleWindowStart = (middle > halfWindow) ? (middle - halfWindow) : 0;
+					sampleWindowEnd = ((sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) < ledsNumber) ?
+						(sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) : ledsNumber;
+				#endif
 			#endif
 		}
 
@@ -185,19 +272,39 @@ class Base
 		inline void renderLeds(bool newFrame)
 		{
 			#if defined(INTERNAL_LED_DATA_PIN)
-				if (newFrame && ledStripIntern != nullptr && samplePixels > 0)
-				{
-					// internal LED shows the average color sampled around the frame middle
-					#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
-						ColorDefinition avg(sampleSumR / samplePixels, sampleSumG / samplePixels,
-							sampleSumB / samplePixels, sampleSumW / samplePixels);
-					#else
-						ColorDefinition avg(sampleSumR / samplePixels, sampleSumG / samplePixels,
-							sampleSumB / samplePixels);
-					#endif
-					for (uint8_t internPix = 0; internPix < INTERNAL_LED_COUNT; internPix++)
-						ledStripIntern->SetPixelColor(internPix, avg);
-				}
+				#if defined(INTERNAL_LED_MATRIX)
+					if (newFrame && ledStripIntern != nullptr)
+					{
+						// each matrix cell shows the average color of its sampled region
+						for (uint8_t cell = 0; cell < INTERNAL_LED_COUNT; cell++)
+						{
+							if (cellPixels[cell] == 0)
+								continue;
+							#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+								ColorDefinition avg(cellSumR[cell] / cellPixels[cell], cellSumG[cell] / cellPixels[cell],
+									cellSumB[cell] / cellPixels[cell], cellSumW[cell] / cellPixels[cell]);
+							#else
+								ColorDefinition avg(cellSumR[cell] / cellPixels[cell], cellSumG[cell] / cellPixels[cell],
+									cellSumB[cell] / cellPixels[cell]);
+							#endif
+							ledStripIntern->SetPixelColor(internalMatrixChainIndex(cell), avg);
+						}
+					}
+				#else
+					if (newFrame && ledStripIntern != nullptr && samplePixels > 0)
+					{
+						// internal LED shows the average color sampled around the frame middle
+						#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+							ColorDefinition avg(sampleSumR / samplePixels, sampleSumG / samplePixels,
+								sampleSumB / samplePixels, sampleSumW / samplePixels);
+						#else
+							ColorDefinition avg(sampleSumR / samplePixels, sampleSumG / samplePixels,
+								sampleSumB / samplePixels);
+						#endif
+						for (uint8_t internPix = 0; internPix < INTERNAL_LED_COUNT; internPix++)
+							ledStripIntern->SetPixelColor(internPix, avg);
+					}
+				#endif
 			#endif
 
 			if (newFrame)
@@ -230,23 +337,51 @@ class Base
 			if (pix < ledsNumber)
 			{
 				#if defined(INTERNAL_LED_DATA_PIN)
-					// reset the sampler on the first pixel of a new frame and
-					// accumulate the color window around the middle LED
+					// reset the sampler on the first pixel of a new frame
 					if (pix == 0)
 					{
-						sampleSumR = sampleSumG = sampleSumB = sampleSumW = 0;
-						samplePixels = 0;
-					}
-					if (pix >= sampleWindowStart && pix < sampleWindowEnd)
-					{
-						sampleSumR += inputColor.R;
-						sampleSumG += inputColor.G;
-						sampleSumB += inputColor.B;
-						#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
-							sampleSumW += inputColor.W;
+						#if defined(INTERNAL_LED_MATRIX)
+							for (uint8_t cell = 0; cell < INTERNAL_LED_COUNT; cell++)
+							{
+								cellSumR[cell] = cellSumG[cell] = cellSumB[cell] = 0;
+								#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+									cellSumW[cell] = 0;
+								#endif
+								cellPixels[cell] = 0;
+							}
+						#else
+							sampleSumR = sampleSumG = sampleSumB = sampleSumW = 0;
+							samplePixels = 0;
 						#endif
-						samplePixels++;
 					}
+
+					#if defined(INTERNAL_LED_MATRIX)
+						// each matrix cell shows one of the INTERNAL_LED_COUNT regions
+						// the incoming frame is divided into
+						uint16_t cell = ((uint32_t)pix * INTERNAL_LED_COUNT) / ledsNumber;
+						if (cell < INTERNAL_LED_COUNT)
+						{
+							cellSumR[cell] += inputColor.R;
+							cellSumG[cell] += inputColor.G;
+							cellSumB[cell] += inputColor.B;
+							#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+								cellSumW[cell] += inputColor.W;
+							#endif
+							cellPixels[cell]++;
+						}
+					#else
+						// accumulate the color window around the middle LED
+						if (pix >= sampleWindowStart && pix < sampleWindowEnd)
+						{
+							sampleSumR += inputColor.R;
+							sampleSumG += inputColor.G;
+							sampleSumB += inputColor.B;
+							#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+								sampleSumW += inputColor.W;
+							#endif
+							samplePixels++;
+						}
+					#endif
 				#endif
 
 				#if defined(SECOND_SEGMENT_START_INDEX)

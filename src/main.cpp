@@ -172,7 +172,13 @@
 	#endif
 	#pragma message(VAR_NAME_VALUE(INTERNAL_LED_DATA_PIN))
 	#pragma message(VAR_NAME_VALUE(INTERNAL_LED_COUNT))
-	#pragma message(VAR_NAME_VALUE(INTERNAL_LED_SAMPLE_WINDOW))
+	#if defined(INTERNAL_LED_MATRIX)
+		#pragma message(VAR_NAME_VALUE(INTERNAL_LED_MATRIX_WIDTH))
+		#pragma message(VAR_NAME_VALUE(INTERNAL_LED_MATRIX_HEIGHT))
+		#pragma message(VAR_NAME_VALUE(INTERNAL_LED_MATRIX_ROTATE))
+	#else
+		#pragma message(VAR_NAME_VALUE(INTERNAL_LED_SAMPLE_WINDOW))
+	#endif
 	#pragma message(VAR_NAME_VALUE2(LED_DRIVER_INTERN))
 #else
 	// stub so the internal segment code compiles out with no cost
