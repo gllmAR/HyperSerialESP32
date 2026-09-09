@@ -38,6 +38,19 @@
 	#endif
 #endif
 
+#if defined(SECOND_SEGMENT_START_INDEX) && defined(INTERNAL_LED_DATA_PIN)
+	#error "Internal LED segment is not combinable with SECOND_SEGMENT (index math)"
+#endif
+
+// internal LED segment: consumes the first pixels of the received frame;
+// 0 (default) disables it and the whole frame goes to the main strip
+#if defined(INTERNAL_LED_DATA_PIN) && !defined(INTERNAL_LED_COUNT)
+	#error "Please define INTERNAL_LED_COUNT for the internal LED segment"
+#endif
+#if !defined(INTERNAL_LED_COUNT)
+	#define INTERNAL_LED_COUNT 0
+#endif
+
 class Base
 {
 	// LED strip number
@@ -46,6 +59,8 @@ class Base
 	LED_DRIVER* ledStrip1 = nullptr;
 	// NeoPixelBusLibrary second object
 	LED_DRIVER2* ledStrip2 = nullptr;
+	// internal LED segment object (optional — e.g. the onboard LED of the M5Atom)
+	LED_DRIVER_INTERN* ledStripIntern = nullptr;
 	// frame is set and ready to render
 	bool readyToRender = false;
 
@@ -91,6 +106,14 @@ class Base
 				ledStrip2 = nullptr;
 			}
 
+			#if defined(INTERNAL_LED_DATA_PIN)
+				if (ledStripIntern != nullptr)
+				{
+					delete ledStripIntern;
+					ledStripIntern = nullptr;
+				}
+			#endif
+
 			ledsNumber = count;
 
 			#if defined(SECOND_SEGMENT_START_INDEX)
@@ -113,13 +136,18 @@ class Base
 			if (ledStrip1 == nullptr)
 			{
 				#if defined(NEOPIXEL_RGBW) || defined(NEOPIXEL_RGB)
-					ledStrip1 = new LED_DRIVER(ledsNumber, DATA_PIN);
+					ledStrip1 = new LED_DRIVER(ledsNumber - INTERNAL_LED_COUNT, DATA_PIN);
 					ledStrip1->Begin();
 				#else
-					ledStrip1 = new LED_DRIVER(ledsNumber);
+					ledStrip1 = new LED_DRIVER(ledsNumber - INTERNAL_LED_COUNT);
 					ledStrip1->Begin(CLOCK_PIN, 12, DATA_PIN, 15);
 				#endif
 			}
+
+			#if defined(INTERNAL_LED_DATA_PIN)
+				ledStripIntern = new LED_DRIVER_INTERN(INTERNAL_LED_COUNT, INTERNAL_LED_DATA_PIN);
+				ledStripIntern->Begin();
+			#endif
 		}
 
 		/**
@@ -145,7 +173,8 @@ class Base
 
 			if (readyToRender &&
 				(ledStrip1 != nullptr && ledStrip1->CanShow()) &&
-				!(ledStrip2 != nullptr && !ledStrip2->CanShow()))
+				!(ledStrip2 != nullptr && !ledStrip2->CanShow()) &&
+				!(ledStripIntern != nullptr && !ledStripIntern->CanShow()))
 			{
 				statistics.increaseShow();
 				readyToRender = false;
@@ -154,6 +183,8 @@ class Base
 				ledStrip1->Show(false);
 				if (ledStrip2 != nullptr)
 					ledStrip2->Show(false);
+				if (ledStripIntern != nullptr)
+					ledStripIntern->Show(false);
 			}
 		}
 
@@ -173,7 +204,15 @@ class Base
 						#endif
 					}
 				#else
-					ledStrip1->SetPixelColor(pix, inputColor);
+					#if defined(INTERNAL_LED_DATA_PIN)
+						// first pixels go to the internal segment, the rest to the main strip
+						if (pix < INTERNAL_LED_COUNT)
+							ledStripIntern->SetPixelColor(pix, inputColor);
+						else
+							ledStrip1->SetPixelColor(pix - INTERNAL_LED_COUNT, inputColor);
+					#else
+						ledStrip1->SetPixelColor(pix, inputColor);
+					#endif
 				#endif
 			}
 
