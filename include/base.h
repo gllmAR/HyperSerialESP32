@@ -73,6 +73,30 @@
 		#if !defined(INTERNAL_LED_MATRIX_ROTATE)
 			#define INTERNAL_LED_MATRIX_ROTATE 0
 		#endif
+		// source frame geometry: the main strip arranged as a 2D matrix.
+		// When the incoming LED count equals SRC_WIDTH * SRC_HEIGHT, the
+		// matrix box-downsamples the 2D layout (each cell = average of the
+		// overlapping source region). Otherwise it falls back to 1D region
+		// sampling across the strip.
+		#if !defined(INTERNAL_LED_MATRIX_SRC_WIDTH)
+			#define INTERNAL_LED_MATRIX_SRC_WIDTH 8
+		#endif
+		#if !defined(INTERNAL_LED_MATRIX_SRC_HEIGHT)
+			#define INTERNAL_LED_MATRIX_SRC_HEIGHT 32
+		#endif
+		// how the linear strip folds into the 2D layout: 1 = row-wise
+		// serpentine (row 0 left-to-right, row 1 right-to-left, ...),
+		// 0 = plain row-major
+		#if !defined(INTERNAL_LED_MATRIX_SRC_SERPENTINE)
+			#define INTERNAL_LED_MATRIX_SRC_SERPENTINE 1
+		#endif
+		// optional orientation fixes of the source image
+		#if !defined(INTERNAL_LED_MATRIX_SRC_FLIP_X)
+			#define INTERNAL_LED_MATRIX_SRC_FLIP_X 0
+		#endif
+		#if !defined(INTERNAL_LED_MATRIX_SRC_FLIP_Y)
+			#define INTERNAL_LED_MATRIX_SRC_FLIP_Y 0
+		#endif
 		// physical chain order of the M5Atom Matrix 5x5 (determined on-device):
 		// row-wise serpentine, chain #0 at the bottom-right corner, running
 		// right-to-left on even rows (counted from the bottom), left-to-right on
@@ -118,6 +142,8 @@ class Base
 				uint32_t cellSumW[INTERNAL_LED_COUNT] = {0};
 			#endif
 			uint16_t cellPixels[INTERNAL_LED_COUNT] = {0};
+			// true when the incoming frame folds into the configured 2D layout
+			bool internalSourceMapping = false;
 
 			// map a logical cell to the physical chain index, honoring the
 			// compile-time rotation (90 degrees clockwise steps) and mirroring
@@ -249,6 +275,11 @@ class Base
 					sampleWindowStart = (middle > halfWindow) ? (middle - halfWindow) : 0;
 					sampleWindowEnd = ((sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) < ledsNumber) ?
 						(sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) : ledsNumber;
+				#else
+					// 2D box-downsampling is only possible when the frame matches
+					// the configured source layout; otherwise 1D region sampling
+					internalSourceMapping = (ledsNumber ==
+						(uint32_t)INTERNAL_LED_MATRIX_SRC_WIDTH * INTERNAL_LED_MATRIX_SRC_HEIGHT);
 				#endif
 			#endif
 		}
@@ -356,9 +387,31 @@ class Base
 					}
 
 					#if defined(INTERNAL_LED_MATRIX)
-						// each matrix cell shows one of the INTERNAL_LED_COUNT regions
-						// the incoming frame is divided into
-						uint16_t cell = ((uint32_t)pix * INTERNAL_LED_COUNT) / ledsNumber;
+						// map the incoming pixel to a matrix cell: 2D box-downsampling
+						// of the source layout when the frame matches it, otherwise
+						// 1D region sampling across the strip
+						uint16_t cell;
+						if (internalSourceMapping)
+						{
+							uint16_t row = pix / INTERNAL_LED_MATRIX_SRC_WIDTH;
+							uint16_t col = pix - row * INTERNAL_LED_MATRIX_SRC_WIDTH;
+							#if INTERNAL_LED_MATRIX_SRC_SERPENTINE
+								if (row & 1)
+									col = INTERNAL_LED_MATRIX_SRC_WIDTH - 1 - col;
+							#endif
+							#if INTERNAL_LED_MATRIX_SRC_FLIP_X
+								col = INTERNAL_LED_MATRIX_SRC_WIDTH - 1 - col;
+							#endif
+							#if INTERNAL_LED_MATRIX_SRC_FLIP_Y
+								row = INTERNAL_LED_MATRIX_SRC_HEIGHT - 1 - row;
+							#endif
+							cell = (uint32_t)row * INTERNAL_LED_MATRIX_WIDTH / INTERNAL_LED_MATRIX_SRC_HEIGHT * INTERNAL_LED_MATRIX_WIDTH
+								+ (uint32_t)col * INTERNAL_LED_MATRIX_WIDTH / INTERNAL_LED_MATRIX_SRC_WIDTH;
+						}
+						else
+						{
+							cell = ((uint32_t)pix * INTERNAL_LED_COUNT) / ledsNumber;
+						}
 						if (cell < INTERNAL_LED_COUNT)
 						{
 							cellSumR[cell] += inputColor.R;
