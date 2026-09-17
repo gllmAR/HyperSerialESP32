@@ -48,11 +48,12 @@
 // of the frame.
 //
 // INTERNAL_LED_MATRIX (e.g. M5Atom Matrix, 25 LEDs): the internal strand
-// is a small matrix; each cell shows the average color of one of the
-// INTERNAL_LED_COUNT regions the incoming frame is divided into, arranged
-// row-major from the top-left. INTERNAL_LED_MATRIX_ROTATE (0-3, 90 degrees
-// clockwise steps) and INTERNAL_LED_MATRIX_MIRROR adapt the logical view
-// to the physical mounting of the device.
+// is a small matrix; the incoming 2D frame is area-weighted (box filter)
+// resampled down to it, so each cell shows the average color of the source
+// region it covers, arranged row-major from the top-left.
+// INTERNAL_LED_MATRIX_ROTATE (0-3, 90 degrees clockwise steps) and
+// INTERNAL_LED_MATRIX_MIRROR adapt the logical view to the physical
+// mounting of the device.
 //
 // INTERNAL_LED_COUNT defaults to 1 (25 in matrix mode). To disable the
 // internal LED, build without INTERNAL_LED_DATA_PIN.
@@ -75,9 +76,10 @@
 		#endif
 		// source frame geometry: the main strip arranged as a 2D matrix.
 		// When the incoming LED count equals SRC_WIDTH * SRC_HEIGHT, the
-		// matrix box-downsamples the 2D layout (each cell = average of the
-		// overlapping source region). Otherwise it falls back to 1D region
-		// sampling across the strip.
+		// matrix area-weighted (box filter) resamples the 2D layout: each
+		// cell is the overlap-weighted average of the source pixels it
+		// covers (correct for non-square matrices and non-integer ratios).
+		// Otherwise it falls back to 1D region sampling across the strip.
 		#if !defined(INTERNAL_LED_MATRIX_SRC_WIDTH)
 			#define INTERNAL_LED_MATRIX_SRC_WIDTH 8
 		#endif
@@ -133,15 +135,16 @@ class Base
 		// internal LED segment object (e.g. the onboard LED of the M5Atom)
 		LED_DRIVER_INTERN* ledStripIntern = nullptr;
 		#if defined(INTERNAL_LED_MATRIX)
-			// per-cell color sample buckets: the incoming frame is divided
-			// into INTERNAL_LED_COUNT regions, one per matrix cell
+			// per-cell color sample buckets: the incoming frame is resampled
+			// into INTERNAL_LED_COUNT cells. cellWeight accumulates the total
+			// sample weight (overlap area) for each cell.
 			uint32_t cellSumR[INTERNAL_LED_COUNT] = {0};
 			uint32_t cellSumG[INTERNAL_LED_COUNT] = {0};
 			uint32_t cellSumB[INTERNAL_LED_COUNT] = {0};
 			#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
 				uint32_t cellSumW[INTERNAL_LED_COUNT] = {0};
 			#endif
-			uint16_t cellPixels[INTERNAL_LED_COUNT] = {0};
+			uint16_t cellWeight[INTERNAL_LED_COUNT] = {0};
 			// true when the incoming frame folds into the configured 2D layout
 			bool internalSourceMapping = false;
 
@@ -173,6 +176,65 @@ class Base
 				#endif
 
 				return internalLedMatrixMap[y * INTERNAL_LED_MATRIX_WIDTH + x];
+			}
+
+			// Area-weighted (box filter) downsampling of one source pixel into
+			// the matrix buckets. A source pixel can overlap several destination
+			// cells (up to four in the downscaling case); each contribution is
+			// weighted by the overlap area, so the result is a true box filter
+			// and stays correct for non-square matrices and non-integer ratios.
+			inline void internalMatrixAdd(uint16_t col, uint16_t row, ColorDefinition &c)
+			{
+				const uint16_t sw = INTERNAL_LED_MATRIX_SRC_WIDTH;
+				const uint16_t sh = INTERNAL_LED_MATRIX_SRC_HEIGHT;
+				const uint16_t mw = INTERNAL_LED_MATRIX_WIDTH;
+				const uint16_t mh = INTERNAL_LED_MATRIX_HEIGHT;
+
+				// source pixel span in cell-scaled units (1 pixel = mw x mh)
+				uint32_t px0 = (uint32_t)col * mw;
+				uint32_t px1 = px0 + mw;
+				uint32_t py0 = (uint32_t)row * mh;
+				uint32_t py1 = py0 + mh;
+
+				uint16_t cx0 = px0 / sw;
+				uint16_t cx1 = (px1 - 1) / sw;
+				uint16_t cy0 = py0 / sh;
+				uint16_t cy1 = (py1 - 1) / sh;
+
+				for (uint16_t cy = cy0; cy <= cy1; cy++)
+				{
+					uint32_t y0 = (uint32_t)cy * sh;
+					uint32_t y1 = y0 + sh;
+					uint32_t yTop = (py0 > y0) ? py0 : y0;
+					uint32_t yBot = (py1 < y1) ? py1 : y1;
+					uint32_t oy = yBot - yTop;
+					if (oy == 0)
+						continue;
+
+					for (uint16_t cx = cx0; cx <= cx1; cx++)
+					{
+						uint32_t x0 = (uint32_t)cx * sw;
+						uint32_t x1 = x0 + sw;
+						uint32_t xLeft = (px0 > x0) ? px0 : x0;
+						uint32_t xRight = (px1 < x1) ? px1 : x1;
+						uint32_t ox = xRight - xLeft;
+						if (ox == 0)
+							continue;
+
+						uint16_t cell = cy * mw + cx;
+						if (cell >= INTERNAL_LED_COUNT)
+							continue;
+
+						uint32_t weight = ox * oy;
+						cellSumR[cell] += c.R * weight;
+						cellSumG[cell] += c.G * weight;
+						cellSumB[cell] += c.B * weight;
+						#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+							cellSumW[cell] += c.W * weight;
+						#endif
+						cellWeight[cell] += weight;
+					}
+				}
 			}
 		#else
 			// running average of the color sampled around the frame middle
@@ -306,17 +368,17 @@ class Base
 				#if defined(INTERNAL_LED_MATRIX)
 					if (newFrame && ledStripIntern != nullptr)
 					{
-						// each matrix cell shows the average color of its sampled region
+						// each matrix cell shows the area-weighted average of its source region
 						for (uint8_t cell = 0; cell < INTERNAL_LED_COUNT; cell++)
 						{
-							if (cellPixels[cell] == 0)
+							if (cellWeight[cell] == 0)
 								continue;
 							#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
-								ColorDefinition avg(cellSumR[cell] / cellPixels[cell], cellSumG[cell] / cellPixels[cell],
-									cellSumB[cell] / cellPixels[cell], cellSumW[cell] / cellPixels[cell]);
+								ColorDefinition avg(cellSumR[cell] / cellWeight[cell], cellSumG[cell] / cellWeight[cell],
+									cellSumB[cell] / cellWeight[cell], cellSumW[cell] / cellWeight[cell]);
 							#else
-								ColorDefinition avg(cellSumR[cell] / cellPixels[cell], cellSumG[cell] / cellPixels[cell],
-									cellSumB[cell] / cellPixels[cell]);
+								ColorDefinition avg(cellSumR[cell] / cellWeight[cell], cellSumG[cell] / cellWeight[cell],
+									cellSumB[cell] / cellWeight[cell]);
 							#endif
 							ledStripIntern->SetPixelColor(internalMatrixChainIndex(cell), avg);
 						}
@@ -378,7 +440,7 @@ class Base
 								#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
 									cellSumW[cell] = 0;
 								#endif
-								cellPixels[cell] = 0;
+								cellWeight[cell] = 0;
 							}
 						#else
 							sampleSumR = sampleSumG = sampleSumB = sampleSumW = 0;
@@ -387,10 +449,11 @@ class Base
 					}
 
 					#if defined(INTERNAL_LED_MATRIX)
-						// map the incoming pixel to a matrix cell: 2D box-downsampling
-						// of the source layout when the frame matches it, otherwise
-						// 1D region sampling across the strip
-						uint16_t cell;
+						// map the incoming pixel onto the matrix:
+						// - when the frame matches the configured source layout, use
+						//   area-weighted 2D downsampling (a pixel may contribute to
+						//   several cells, weighted by the overlap area)
+						// - otherwise fall back to 1D region sampling across the strip
 						if (internalSourceMapping)
 						{
 							uint16_t row = pix / INTERNAL_LED_MATRIX_SRC_WIDTH;
@@ -405,22 +468,21 @@ class Base
 							#if INTERNAL_LED_MATRIX_SRC_FLIP_Y
 								row = INTERNAL_LED_MATRIX_SRC_HEIGHT - 1 - row;
 							#endif
-							cell = (uint32_t)row * INTERNAL_LED_MATRIX_WIDTH / INTERNAL_LED_MATRIX_SRC_HEIGHT * INTERNAL_LED_MATRIX_WIDTH
-								+ (uint32_t)col * INTERNAL_LED_MATRIX_WIDTH / INTERNAL_LED_MATRIX_SRC_WIDTH;
+							internalMatrixAdd(col, row, inputColor);
 						}
 						else
 						{
-							cell = ((uint32_t)pix * INTERNAL_LED_COUNT) / ledsNumber;
-						}
-						if (cell < INTERNAL_LED_COUNT)
-						{
-							cellSumR[cell] += inputColor.R;
-							cellSumG[cell] += inputColor.G;
-							cellSumB[cell] += inputColor.B;
-							#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
-								cellSumW[cell] += inputColor.W;
-							#endif
-							cellPixels[cell]++;
+							uint16_t cell = ((uint32_t)pix * INTERNAL_LED_COUNT) / ledsNumber;
+							if (cell < INTERNAL_LED_COUNT)
+							{
+								cellSumR[cell] += inputColor.R;
+								cellSumG[cell] += inputColor.G;
+								cellSumB[cell] += inputColor.B;
+								#if defined(NEOPIXEL_RGBW) || defined(SPILED_APA102)
+									cellSumW[cell] += inputColor.W;
+								#endif
+								cellWeight[cell]++;
+							}
 						}
 					#else
 						// accumulate the color window around the middle LED
