@@ -74,6 +74,12 @@
 		#if !defined(INTERNAL_LED_MATRIX_ROTATE)
 			#define INTERNAL_LED_MATRIX_ROTATE 0
 		#endif
+		// a 90/270 degree rotation swaps the matrix axes, which is only
+		// representable for a square matrix
+		#if (INTERNAL_LED_MATRIX_ROTATE == 1 || INTERNAL_LED_MATRIX_ROTATE == 3) && \
+			(INTERNAL_LED_MATRIX_WIDTH != INTERNAL_LED_MATRIX_HEIGHT)
+			#error "INTERNAL_LED_MATRIX_ROTATE 1/3 requires INTERNAL_LED_MATRIX_WIDTH == INTERNAL_LED_MATRIX_HEIGHT"
+		#endif
 		// source frame geometry: the main strip arranged as a 2D matrix.
 		// When the incoming LED count equals SRC_WIDTH * SRC_HEIGHT, the
 		// matrix area-weighted (box filter) resamples the 2D layout: each
@@ -113,6 +119,14 @@
 				   5,  6,  7,  8,  9, \
 				   4,  3,  2,  1,  0 }
 		#endif
+		// catch a custom map whose entry count does not match the matrix
+		inline void internalLedMatrixMapCheck()
+		{
+			const uint8_t entries[] = INTERNAL_LED_MATRIX_MAP;
+			static_assert(sizeof(entries) == INTERNAL_LED_COUNT,
+				"INTERNAL_LED_MATRIX_MAP must have exactly INTERNAL_LED_MATRIX_WIDTH * INTERNAL_LED_MATRIX_HEIGHT entries");
+			(void)entries;
+		}
 	#else
 		#if !defined(INTERNAL_LED_COUNT)
 			#define INTERNAL_LED_COUNT 1
@@ -338,10 +352,20 @@ class Base
 					sampleWindowEnd = ((sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) < ledsNumber) ?
 						(sampleWindowStart + INTERNAL_LED_SAMPLE_WINDOW) : ledsNumber;
 				#else
-					// 2D box-downsampling is only possible when the frame matches
-					// the configured source layout; otherwise 1D region sampling
+					// 2D resampling is only possible when the frame matches the
+					// configured source layout; otherwise fall back to 1D sampling
 					internalSourceMapping = (ledsNumber ==
 						(uint32_t)INTERNAL_LED_MATRIX_SRC_WIDTH * INTERNAL_LED_MATRIX_SRC_HEIGHT);
+					#if !defined(HYPERSERIAL_TESTING)
+						if (!internalSourceMapping)
+						{
+							SerialPort.print("Internal LED matrix: frame has ");
+							SerialPort.print(ledsNumber);
+							SerialPort.print(" LEDs but the source layout is ");
+							SerialPort.print((uint32_t)INTERNAL_LED_MATRIX_SRC_WIDTH * INTERNAL_LED_MATRIX_SRC_HEIGHT);
+							SerialPort.println("; using 1D sampling.");
+						}
+					#endif
 				#endif
 			#endif
 		}
