@@ -1,5 +1,7 @@
 .pio
 .DS_Store
+__pycache__/
+*.pyc
 
 # clangd generated
 compile_commands.json

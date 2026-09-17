@@ -72,6 +72,38 @@ For the RGBW firmware the white channel is automatically calculated and R,G,B ch
 
 ---
 
+# Internal LED / LED matrix (M5Atom)
+
+The M5Atom family has an onboard RGB LED or a 5x5 WS2812C matrix on **GPIO 27**, in addition to the external strip on **GPIO 26**. HyperSerialESP32 can drive it as an *independent* segment:
+
+* It does **not** consume any pixel from the AWA frame. It shows colors *sampled* from the frame, so your LED layout in HyperHDR stays exactly as it is.
+* It uses its own RMT channel, so the external strip's I2S/DMA output is untouched.
+
+Two environments are provided:
+
+| Environment     | Onboard output                          | Source sampling |
+|-----------------|-----------------------------------------|-----------------|
+| `m5atom`        | 25 LEDs, all showing one averaged color | average of a window (`INTERNAL_LED_SAMPLE_WINDOW`, default 16) around the frame middle |
+| `m5atom_matrix` | 5x5 matrix                              | area-weighted (box filter) resample of the configured 2D source layout (default 8x32) |
+
+`m5atom_matrix` is the recommended build for the M5Atom Matrix: each cell is the average of the source region it covers, so the matrix acts as a miniature display of the incoming frame.
+
+Configuration (see the comments at the top of `platformio.ini`):
+
+* `INTERNAL_LED_DATA_PIN` — onboard LED pin (GPIO 27 on the M5Atom); remove it to disable the feature.
+* `INTERNAL_LED_COUNT` — number of LEDs on the internal strand (25 for the matrix).
+* Matrix mode: `INTERNAL_LED_MATRIX`, `INTERNAL_LED_MATRIX_WIDTH`/`_HEIGHT`, source layout `INTERNAL_LED_MATRIX_SRC_WIDTH`/`_HEIGHT`/`_SERPENTINE`/`_FLIP_X`/`_FLIP_Y`, and physical orientation `INTERNAL_LED_MATRIX_ROTATE`/`_MIRROR`.
+
+The resampling is a true area-weighted box filter, correct for non-square matrices and non-integer scale factors. It can be verified on the host without a device:
+
+```
+python3 test/test_matrix_resample.py
+```
+
+For manual testing against a device, `test/awa_serial_test.py` streams synthetic AWA frames, including a per-cell matrix pattern for checking orientation/mapping.
+
+---
+
 # Usage in HyperHDR
 
 **In HyperHDR `Image Processing→Smoothing→Update frequency` you should do not exceed the maximum capacity of the device. Read more here: [how to get statistics](https://github.com/awawa-dev/HyperHDR/wiki/HyperSerial)**

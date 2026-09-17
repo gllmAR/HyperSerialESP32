@@ -12,7 +12,8 @@ Usage:
 Modes:
   top       - top quarter of an 8x32 layout lit green (2D test, default)
   bottom    - bottom quarter lit green
-  center    - only the middle matrix region lit green (cell 12)
+  center    - only the 2D matrix cell 12 (center) lit green
+  matrix    - distinct color per 5x5 matrix cell (orientation/mapping test)
   rainbow   - animated hue sweep across the strip
   stats     - request and print the device statistics
 
@@ -58,6 +59,26 @@ def fold_2d(i, width=8):
     return col, row
 
 
+def matrix_cell(col, row, mw=5, mh=5, sw=8, sh=32):
+    """Dominant destination cell (row-major) for a source pixel, using the
+    same area-weighted box filter as include/base.h."""
+    px0, px1 = col * mw, (col + 1) * mw
+    py0, py1 = row * mh, (row + 1) * mh
+    best, best_w = 0, -1
+    for cy in range(py0 // sh, (py1 - 1) // sh + 1):
+        oy = min(py1, (cy + 1) * sh) - max(py0, cy * sh)
+        if oy <= 0:
+            continue
+        for cx in range(px0 // sw, (px1 - 1) // sw + 1):
+            ox = min(px1, (cx + 1) * sw) - max(px0, cx * sw)
+            if ox <= 0:
+                continue
+            if ox * oy > best_w:
+                best_w = ox * oy
+                best = cy * mw + cx
+    return best
+
+
 def hsv(h):
     h = h % 360
     x = int(255 * (1 - abs((h / 60) % 2 - 1)))
@@ -101,8 +122,11 @@ def main():
     elif mode == "bottom":
         pix = lambda i: (0, 150, 0) if fold_2d(i)[1] >= 3 * count // 4 else dim
     elif mode == "center":
-        # with 25 matrix cells, region 12 is the center cell
-        pix = lambda i: (0, 150, 0) if (i * 25) // count == 12 else dim
+        # only the source pixels whose dominant cell is 12 (the center cell)
+        pix = lambda i: (0, 150, 0) if matrix_cell(*fold_2d(i)) == 12 else dim
+    elif mode == "matrix":
+        # a distinct hue per matrix cell: verifies mapping/ROTATE/MIRROR
+        pix = lambda i: hsv(int(360 * matrix_cell(*fold_2d(i)) / 25))
     elif mode == "rainbow":
         t0 = time.time()
         pix = lambda i: hsv(360 * ((i / count) + (time.time() - t0) / 4))
